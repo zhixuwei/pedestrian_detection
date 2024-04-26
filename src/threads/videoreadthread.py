@@ -1,6 +1,6 @@
 import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
-from cv2 import cv2
+import cv2
 import time
 
 from src.detect.peopledetect import PeopleDetect
@@ -28,7 +28,7 @@ class VideoReadThread(QThread):
         cv2img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         pilimg = Image.fromarray(cv2img)
         draw = ImageDraw.Draw(pilimg)
-        font = ImageFont.truetype("SimHei.ttf", 20, encoding="utf-8")
+        font = ImageFont.truetype("data/font/SimHei.ttf", 20, encoding="utf-8")
         draw.text((100, 50), text, (255, 0, 0), font=font)
         cv2charimg = cv2.cvtColor(np.array(pilimg), cv2.COLOR_RGB2BGR)
         return cv2charimg
@@ -37,6 +37,7 @@ class VideoReadThread(QThread):
         try:
             self.work = True
             self.capture = cv2.VideoCapture(self.video_path)
+            # self.capture = cv2.VideoCapture(0, cv2.CAP_DSHOW)
             success, frame = self.capture.read()
             self.signalFrame.emit(frame, frame, 0)
             while True:
@@ -44,14 +45,20 @@ class VideoReadThread(QThread):
                     if self.capture.isOpened():
                         self.capture.release()
                         print("释放")
+                    self.signalFrame.emit(None, 1, 0)
                     break
                 time.sleep(0.01)
                 success, frame = self.capture.read()
-                # print(success)
-                orig, image, count = self.people_detect.detectVideo(frame)
-                if count > 0:
-                    text = "行人碰撞预警({}人)".format(count)
-                    image = self.drawText(text, image)
-                self.signalFrame.emit(frame, image, count)
+                if success:
+                    orig, image, count = self.people_detect.detectVideo(frame)
+                    if count > 0:
+                        text = "行人碰撞预警({}人)".format(count)
+                        orig = self.drawText(text, orig)
+                    self.signalFrame.emit(frame, orig, count)
+                else:
+                    self.capture.release()
+                    self.signalFrame.emit(None, 0, 0)
+                    break
         except Exception as err:
+            print(err)
             self.signalFailed.emit(str(err))

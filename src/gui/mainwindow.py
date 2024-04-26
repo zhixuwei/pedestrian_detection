@@ -3,7 +3,7 @@ import os
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon, QCursor, QImage, QPixmap
 from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox
-from cv2 import cv2
+import cv2
 
 import time
 from src.detect.peopledetect import PeopleDetect
@@ -13,6 +13,7 @@ from src.gui.selectpath import SelectPathDialog
 from src.threads.videoreadthread import VideoReadThread
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
+
 
 class PDMainWindow(QMainWindow, ui_mainwindow.Ui_MainWindow):
     def __init__(self):
@@ -29,7 +30,7 @@ class PDMainWindow(QMainWindow, ui_mainwindow.Ui_MainWindow):
         self.cameraReadThread = VideoReadThread()
         self.cameraReadThread.signalFrame.connect(self.slotUpdateResult)
 
-        self.beginRecoding = False   # 是否开始录制
+        self.beginRecoding = False  # 是否开始录制
         self.beginRecodingTime = ""  # 开始录制时间
         self.video_out = None
         self.fourcc = cv2.VideoWriter_fourcc(*'XVID')
@@ -39,11 +40,20 @@ class PDMainWindow(QMainWindow, ui_mainwindow.Ui_MainWindow):
         self.setWindowTitle(SYS_NAME)
         # self.setFixedSize(self.width(), self.height())
         # self.menubar.setNativeMenuBar(False)  # 不同平台
-        # self.setStyleSheet("#MainWindow{border-image:url(./icons/bg.jpg)}")
-        self.setWindowIcon(QIcon("./icons/icon.jpg"))
+        # self.setStyleSheet("#MainWindow{border-image:url(data/image/bg.jpg)}")
+        self.setWindowIcon(QIcon("data/image/icon.jpg"))
         # self.setWindowFlags(Qt.FramelessWindowHint)  # 去掉标题栏
         # self.setWindowOpacity(0.9)  # 设置透明
         self.statusbar.setStyleSheet("color:green")
+        self.reset_show_window()
+
+    def reset_show_window(self):
+        show_area_img = cv2.imread("data/image/area_show.jpg")
+        detect_area_img = cv2.imread("data/image/area_detect.jpg")
+
+        self.showImgToLabel(show_area_img, 1)
+        self.showImgToLabel(detect_area_img, 2)
+        self.lcdNumber.display(0)
 
     def initConnect(self):
         # 菜单栏 - 图片
@@ -78,8 +88,8 @@ class PDMainWindow(QMainWindow, ui_mainwindow.Ui_MainWindow):
             self.lcdNumber.display(count)
             if count > 0:
                 text = "行人碰撞预警({}人)".format(count)
-                image = self.drawText(text, image)
-            self.showImgToLabel(image, 2)
+                orig = self.drawText(text, orig)
+            self.showImgToLabel(orig, 2)
 
     def slotOpenVideo(self):
         """
@@ -107,6 +117,8 @@ class PDMainWindow(QMainWindow, ui_mainwindow.Ui_MainWindow):
         """
         print("关闭视频")
         self.videoReadThread.threadStop()
+        time.sleep(0.1)
+        self.reset_show_window()
         QMessageBox.information(self, '提示', '已关闭！', QMessageBox.Yes)
 
     def slotOpenCamera(self):
@@ -130,6 +142,7 @@ class PDMainWindow(QMainWindow, ui_mainwindow.Ui_MainWindow):
         """
         print("关闭摄像头")
         self.cameraReadThread.threadStop()
+        self.reset_show_window()
         QMessageBox.information(self, '提示', '已关闭！', QMessageBox.Yes)
 
     def slotBeginRecoding(self):
@@ -139,14 +152,17 @@ class PDMainWindow(QMainWindow, ui_mainwindow.Ui_MainWindow):
         """
         if self.videoReadThread.isRunning() or self.cameraReadThread.isRunning():
             self.beginRecoding = True
-            self.beginRecodingTime = time.strftime('%Y-%m-%d_%H:%M:%S')
+            self.beginRecodingTime = time.strftime('%Y-%m-%d_%H_%M_%S')
             print("开始录制时间：{}".format(self.beginRecodingTime))
             video_filename = '{}.avi'.format(self.beginRecodingTime)
-            print(video_filename)
-            self.video_out = cv2.VideoWriter('output.avi', self.fourcc, 30.0, (640, 480))
-            info = '视频录制将保存于本地文件{}.avi'.format(self.beginRecodingTime)
+            save_video_path = "output_videos"
+            os.makedirs(save_video_path, exist_ok=True)
+            save_video_path = os.path.join(save_video_path, video_filename)
+            print(save_video_path)
+            self.video_out = cv2.VideoWriter(save_video_path, self.fourcc, 20.0, (640, 480))
+            info = '视频录制将保存于本地文件{}'.format(save_video_path)
             self.statusbar.showMessage(info)
-            QMessageBox.information(self,'提示',info, QMessageBox.Yes)
+            QMessageBox.information(self, '提示', info, QMessageBox.Yes)
         else:
             QMessageBox.information(self, '提示', '视频或者摄像头未打开无法开启录制！', QMessageBox.Yes)
 
@@ -177,6 +193,7 @@ class PDMainWindow(QMainWindow, ui_mainwindow.Ui_MainWindow):
         qtImg = QImage(result_frame.data,
                        result_frame.shape[1],
                        result_frame.shape[0],
+                       result_frame.shape[1] * 3,
                        QImage.Format_RGB888)
         if id == 1:
             self.label_img1.setScaledContents(True)
@@ -194,19 +211,32 @@ class PDMainWindow(QMainWindow, ui_mainwindow.Ui_MainWindow):
         :return:
         """
         # 显示原图
-        self.showImgToLabel(frame, 1)
-        # 显示结果图
-        self.showImgToLabel(retFrame, 2)
-        # 显示人数
-        self.lcdNumber.display(count)
-        # 保存视频
-        if self.beginRecoding:
-            if self.video_out:
-                try:
-                    self.video_out.write(retFrame)
-                except Exception as e:
-                    print("保存视频异常")
-                    print(str(e))
+        if frame is None:
+            self.reset_show_window()
+            if self.beginRecoding:
+                self.slotEndRecoding()
+            if isinstance(retFrame, int) and retFrame == 0:
+                QMessageBox.information(self, '提示', '视频播放完毕！', QMessageBox.Yes)
+
+        else:
+            self.showImgToLabel(frame, 1)
+            # 显示结果图
+            self.showImgToLabel(retFrame, 2)
+            # 显示人数
+            self.lcdNumber.display(count)
+            # 保存视频
+            if self.beginRecoding:
+                if self.video_out:
+                    try:
+                        scale = min(480 / np.shape(retFrame)[0], 640 / np.shape(retFrame)[1])
+                        new_shape = (int(retFrame.shape[1] * scale), int(retFrame.shape[0] * scale))
+                        resize_frame = cv2.resize(retFrame, new_shape).astype(np.uint8)
+                        padded_img = np.ones((480, 640, 3), dtype=np.uint8) * 114
+                        padded_img[: new_shape[1], :  new_shape[0]] = resize_frame
+                        self.video_out.write(padded_img)
+                    except Exception as e:
+                        print("保存视频异常")
+                        print(str(e))
 
     def mousePressEvent(self, event):
         """
@@ -249,7 +279,7 @@ class PDMainWindow(QMainWindow, ui_mainwindow.Ui_MainWindow):
         cv2img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         pilimg = Image.fromarray(cv2img)
         draw = ImageDraw.Draw(pilimg)
-        font = ImageFont.truetype("SimHei.ttf", 20, encoding="utf-8")
+        font = ImageFont.truetype("data/font/SimHei.ttf", 25, encoding="utf-8")
         draw.text((100, 50), text, (255, 0, 0), font=font)
         cv2charimg = cv2.cvtColor(np.array(pilimg), cv2.COLOR_RGB2BGR)
         return cv2charimg
@@ -288,9 +318,11 @@ class PDMainWindow(QMainWindow, ui_mainwindow.Ui_MainWindow):
     def slotOpenInstructions(self):
         QMessageBox.information(self, '使用说明', "请查看程序安装目录中”使用说明书.pdf“", QMessageBox.Yes)
 
+
 if __name__ == '__main__':
     from PyQt5.QtWidgets import QApplication
     import sys
+
     app = QApplication(sys.argv)
     win = PDMainWindow()
     win.show()

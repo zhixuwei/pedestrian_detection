@@ -1,62 +1,73 @@
-from __future__ import print_function  # 确保代码同时在Python2.7和Python3上兼容
-from imutils.object_detection import non_max_suppression
-from imutils import paths
-import numpy as np
-import argparse
-import imutils   # 安装库pip install imutils
 import cv2
+import numpy as np
+import torch
 
-# construct the argument parse and parse the arguments
-# ap = argparse.ArgumentParser()
-# ap.add_argument("-i", "--images", required=True, help="path to images directory")
-# args = vars(ap.parse_args())
+from .nets.yolox.utils import postprocess
+from .nets.yolox_tools import YOLOXNano, YOLOXTiny
 
-# 1、定义HOG对象
-hog = cv2.HOGDescriptor()
-# 2、设置SVM分类器
-hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
 
-image_Path= "../../images"
-# loop over the image paths
-for imagePath in paths.list_images(image_Path): #args["images"]
-    print(imagePath)
-    # load the image and resize it to (1) reduce detection time
-    # and (2) improve detection accuracy
-    image = cv2.imread(imagePath)
-    image = imutils.resize(image, width=min(400, image.shape[1]))
-    orig = image.copy()
-    '''
-    构造了一个尺度scale=1.05的图像金字塔，以及一个分别在x方向和y方向步长为(4,4)像素大小的滑窗
-    scale的尺度设置得越大，在图像金字塔中层的数目就越少，相应的检测速度就越快，但是尺度太大会导致行人出现漏检；
-    同样的，如果scale设置得太小，将会急剧的增加图像金字塔的层数，这样不仅耗费计算资源，而且还会急剧地增加检测过程
-    中出现的假阳数目(也就是不是行人的被检测成行人)。这表明，scale是在行人检测过程中它是一个重要的参数，
-    需要对scale进行调参。我会在后面的文章中对detectMultiScale中的每个参数做些调研。
-    '''
-# detect people in the image：
-    (rects, weights) = hog.detectMultiScale(image, winStride=(4, 4),
-        padding=(8, 8), scale=1.05)
+class Detector:
+    def __init__(self, mode="fast"):
+        self.net = YOLOXNano() if mode == "fast" else YOLOXTiny()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model_path = self.net.model_path
+        self.model = self.net.get_model()
+        ckpt = torch.load(self.model_path, map_location="cpu")
+        self.model.load_state_dict(ckpt["model"])
+        self.model.to(self.device)
+        self.model.eval()
 
-    # draw the original bounding boxes
-    for (x, y, w, h) in rects:
-        cv2.rectangle(orig, (x, y), (x + w, y + h), (0, 0, 255), 2)
+        self.test_size = (416, 416)
+        self.num_classes = self.net.num_classes
+        self.conf_thr = 0.3
+        self.nms_thr = 0.3
 
-        # apply non-maxima suppression to the bounding boxes using a
-        # fairly large overlap threshold to try to maintain overlapping
-        # boxes that are still people
-    #应用非极大抑制方法，通过设置一个阈值来抑制那些重叠的边框
-    rects = np.array([[x, y, x + w, y + h] for (x, y, w, h) in rects])
-    pick = non_max_suppression(rects, probs=None, overlapThresh=0.65)
+    def letterbox_image(self, img):
+        if len(img.shape) == 3:
+            padded_img = np.ones((self.test_size[0], self.test_size[1], 3), dtype=np.uint8) * 114
+        else:
+            padded_img = np.ones(self.test_size, dtype=np.uint8) * 114
 
-    # draw the final bounding boxes
-    for (xA, yA, xB, yB) in pick:
-        cv2.rectangle(image, (xA, yA), (xB, yB), (0, 255, 0), 2)
+        r = min(self.test_size[0] / img.shape[0], self.test_size[1] / img.shape[1])
+        resized_img = cv2.resize(
+            img,
+            (int(img.shape[1] * r), int(img.shape[0] * r)),
+            interpolation=cv2.INTER_LINEAR,
+        ).astype(np.uint8)
+        padded_img[: int(img.shape[0] * r), : int(img.shape[1] * r)] = resized_img
+        padded_img = padded_img.transpose((2, 0, 1))
+        padded_img = np.ascontiguousarray(padded_img, dtype=np.float32)
+        return padded_img
 
-    # show some information on the number of bounding boxes
-    filename = imagePath[imagePath.rfind("/") + 1:]
-    print("[INFO] {}: {} original boxes, {} after suppression".format(
-        filename, len(rects), len(pick)))
+    def detect_image(self, img):
+        img = self.letterbox_image(img)
+        img = torch.from_numpy(img).unsqueeze(0).to(self.device).float()
+        with torch.no_grad():
+            outputs = self.model(img)
+            outputs = postprocess(outputs, self.num_classes, self.conf_thr, self.nms_thr, class_agnostic=True)
+        return outputs[0] if isinstance(outputs, list) else outputs
 
-    # show the output images
-    cv2.imshow("Before NMS", orig)
-    cv2.imshow("After NMS", image)
-    cv2.waitKey(0)
+    def draw_image(self, img, outputs, cls_conf=0.55):
+        ratio = min(self.test_size[0] / img.shape[0], self.test_size[1] / img.shape[1])
+        target_num = 0
+        if outputs is None:
+            return img, target_num
+        outputs = outputs.cpu().numpy()
+        outputs = outputs[outputs[:, 6] == 0]
+        outputs[:, 0:4] /= ratio
+
+        target_num = 0
+        for output in outputs:
+            bbox = output[:4]
+            cls = output[6]
+            score = output[4] * output[5]
+            if score < cls_conf:
+                continue
+            x0 = int(bbox[0])
+            y0 = int(bbox[1])
+            x1 = int(bbox[2])
+            y1 = int(bbox[3])
+            target_num += 1
+
+            cv2.rectangle(img, (x0, y0), (x1, y1), (77, 171, 255), 2)
+        return img, target_num
