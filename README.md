@@ -14,3 +14,4 @@ Use Torch as the inference engine and pyqt to implement interactive pages.
 这是一个很适合深度学习模型部署练手的小项目
 可以初步了解一下GUI编程、深度学习模型部署
 这个小项目大可作为宏大毕业设计前的开胃菜
+共勉~
